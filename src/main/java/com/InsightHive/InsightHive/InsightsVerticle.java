@@ -11,11 +11,20 @@ import io.vertx.core.http.HttpServer;
 import io.vertx.ext.web.client.WebClient;
 import io.vertx.ext.web.client.WebClientOptions;
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
-import software.amazon.awssdk.services.bedrock.BedrockClient;
+// import software.amazon.awssdk.services.bedrock.BedrockClient;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.http.HttpServer;
 import software.amazon.awssdk.regions.Region;
-import software.amazon.awssdk.*;
+// import software.amazon.awssdk.*;
+// import software.amazon.awssdk.services.bedrock.model.InvokeModelRequest;
+// import software.amazon.awssdk.services.bedrock.model.InvokeModelResponse;
+
+import software.amazon.awssdk.services.bedrockruntime.BedrockRuntimeClient;
+import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelRequest;
+import software.amazon.awssdk.services.bedrockruntime.model.InvokeModelResponse;
+import software.amazon.awssdk.core.SdkBytes;
+
+import software.amazon.awssdk.core.SdkBytes;
 
 import org.neo4j.driver.*;
 
@@ -25,10 +34,10 @@ public class InsightsVerticle extends AbstractVerticle {
     private WebClient webClient;
 
 
-     private final BedrockClient bedrockClient = BedrockClient.builder()
-            .region(Region.AP_SOUTH_1)
-            .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
-            .build();
+    //  private final BedrockClient bedrockClient = BedrockClient.builder()
+    //         .region(Region.AP_SOUTH_1)
+    //         .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
+    //         .build();
 
     @Override
     public void start(Promise<Void> startPromise) {
@@ -174,30 +183,73 @@ vertx.createHttpServer()
 //     });
 // }
 
+private void aiInsight(RoutingContext ctx) {
+    ctx.request().bodyHandler(buffer -> {
+        JsonObject body = buffer.toJsonObject();
+        String prompt = body.getString("context", "Provide a short summary of trends.");
 
+        try (BedrockRuntimeClient bedrockClient = BedrockRuntimeClient.builder()
+                .region(software.amazon.awssdk.regions.Region.AP_SOUTH_1)
+                .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
+                .build()) {
 
-    private void aiInsight(RoutingContext ctx) {
-        ctx.request().bodyHandler(buffer -> {
-            JsonObject body = buffer.toJsonObject();
-            String prompt = body.getString("context", "Provide a short summary of trends.");
+            // Use correct field for Titan Text Lite
+            String jsonBody = new JsonObject()
+                    .put("inputText", prompt)
+                    .encode();
 
-            // Prepare Bedrock request using Titan Text G1 - Express
-            // InvokeModelRequest request = InvokeModelRequest.builder()
-            //         .modelId("aws.titan-tg1-express") // Titan Text G1 - Express model ID
-            //         .body("{\"inputText\":\"" + prompt + "\", \"maxTokens\":1024}")
-            //         .build();
+            InvokeModelRequest request = InvokeModelRequest.builder()
+                    .modelId("amazon.titan-text-lite-v1")
+                    .body(SdkBytes.fromUtf8String(jsonBody))
+                    .build();
 
+            InvokeModelResponse response = bedrockClient.invokeModel(request);
+
+            String responseStr = response.body().asUtf8String();
+            System.out.println("Raw Bedrock response: " + responseStr); // Log the full response
+
+            String summary = "";
             try {
-                // InvokeModelResponse response = bedrockClient.invokeModel(request);
+                JsonObject jsonResponse = new JsonObject(responseStr);
 
-                // Get model response as text
-                // String resultText = response.body().asUtf8String();
-                // ctx.json(new JsonObject().put("summary", resultText));
+                // Try multiple possible paths
+                if (jsonResponse.containsKey("results")) {
+                    JsonArray results = jsonResponse.getJsonArray("results");
+                    if (!results.isEmpty()) {
+                        JsonObject firstResult = results.getJsonObject(0);
+                        if (firstResult.containsKey("output")) {
+                            JsonArray output = firstResult.getJsonArray("output");
+                            if (!output.isEmpty()) {
+                                JsonObject firstOutput = output.getJsonObject(0);
+                                if (firstOutput.containsKey("content")) {
+                                    JsonArray content = firstOutput.getJsonArray("content");
+                                    if (!content.isEmpty()) {
+                                        summary = content.getJsonObject(0).getString("text", "");
+                                    }
+                                }
+                            }
+                        }
+                        // Fallback: some versions return outputText directly
+                        if (summary.isEmpty() && firstResult.containsKey("outputText")) {
+                            summary = firstResult.getString("outputText", "");
+                        }
+                    }
+                }
             } catch (Exception e) {
-                ctx.fail(new RuntimeException("Bedrock call failed", e));
+                e.printStackTrace();
             }
-        });
-    }
+
+            ctx.json(new JsonObject().put("summary", summary));
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            ctx.fail(new RuntimeException("Bedrock call failed", e));
+        }
+    });
+}
+
+
+
 
 
 
